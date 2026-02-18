@@ -32,7 +32,7 @@ export const SPEED_MULT = 80;
 export const SHADOW_CAM_SIZE = 80;
 
 // Monster
-export const MONSTER_SPEED      = 0.08;
+export const MONSTER_SPEED      = 0.90;
 export const MONSTER_SPAWN_DIST = 200;
 export const MONSTER_HIT_DIST   = 6;
 
