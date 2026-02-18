@@ -35,7 +35,8 @@ export function buildWorld(scene) {
 
   /* ---- geometry collectors (grouped by material) ---- */
   const C = {
-    road: [], sidewalk: [], yellowDash: [], whiteLine: [],
+    road: [], yellowDash: [], whiteLine: [],
+    sidewalk: [], interPad: [],
     winFrame: [], winGlass: [], winLit: [], ledge: [], floorDiv: [],
     door: [], handle: [], ac: [], roofCyl: [], roofAnt: [],
     trunk: [],
@@ -92,37 +93,94 @@ export function buildWorld(scene) {
   // ══════════════════════════════════════════════════════════════
   // ROADS  +  MARKINGS  +  SIDEWALKS
   // ══════════════════════════════════════════════════════════════
+  const RW = 14; // road width
+  const INT_MARGIN = RW / 2 + 3; // skip zone around intersections
+
+  function isNearIntersection(x, z, margin) {
+    return INTERSECTIONS.some(i => Math.abs(x - i.x) < margin && Math.abs(z - i.z) < margin);
+  }
+
   ROAD_DEFS.forEach(r => {
     C.road.push(geoAt(new THREE.BoxGeometry(r.w, 0.05, r.d), r.x, 0.02, r.z));
     const isH = r.w > r.d;
 
-    // sidewalks
-    if (isH) {
-      C.sidewalk.push(geoAt(new THREE.BoxGeometry(r.w, 0.12, 3.5), r.x, 0.06, r.z + r.d / 2 + 2));
-      C.sidewalk.push(geoAt(new THREE.BoxGeometry(r.w, 0.12, 3.5), r.x, 0.06, r.z - r.d / 2 - 2));
-    } else {
-      C.sidewalk.push(geoAt(new THREE.BoxGeometry(3.5, 0.12, r.d), r.x + r.w / 2 + 2, 0.06, r.z));
-      C.sidewalk.push(geoAt(new THREE.BoxGeometry(3.5, 0.12, r.d), r.x - r.w / 2 - 2, 0.06, r.z));
-    }
-
-    // centre dashes
+    // centre dashes — skip near intersections
     const len = isH ? r.w : r.d;
     for (let i = 0; i < Math.floor(len / 8); i++) {
-      if (isH) C.yellowDash.push(geoAt(new THREE.BoxGeometry(3, 0.06, 0.25), r.x - len / 2 + i * 8 + 4, 0.05, r.z));
-      else     C.yellowDash.push(geoAt(new THREE.BoxGeometry(0.25, 0.06, 3), r.x, 0.05, r.z - len / 2 + i * 8 + 4));
+      if (isH) {
+        const px = r.x - len / 2 + i * 8 + 4;
+        if (!isNearIntersection(px, r.z, INT_MARGIN))
+          C.yellowDash.push(geoAt(new THREE.BoxGeometry(3, 0.06, 0.25), px, 0.05, r.z));
+      } else {
+        const pz = r.z - len / 2 + i * 8 + 4;
+        if (!isNearIntersection(r.x, pz, INT_MARGIN))
+          C.yellowDash.push(geoAt(new THREE.BoxGeometry(0.25, 0.06, 3), r.x, 0.05, pz));
+      }
     }
 
-    // edge lines
+    // edge lines — skip near intersections
     const eo = (isH ? r.d : r.w) / 2 - 0.5;
     for (let i = 0; i < Math.floor(len / 4); i++) {
       if (isH) {
         const px = r.x - len / 2 + i * 4 + 2;
-        C.whiteLine.push(geoAt(new THREE.BoxGeometry(3.5, 0.055, 0.15), px, 0.05, r.z + eo));
-        C.whiteLine.push(geoAt(new THREE.BoxGeometry(3.5, 0.055, 0.15), px, 0.05, r.z - eo));
+        if (!isNearIntersection(px, r.z, INT_MARGIN)) {
+          C.whiteLine.push(geoAt(new THREE.BoxGeometry(3.5, 0.055, 0.15), px, 0.05, r.z + eo));
+          C.whiteLine.push(geoAt(new THREE.BoxGeometry(3.5, 0.055, 0.15), px, 0.05, r.z - eo));
+        }
       } else {
         const pz = r.z - len / 2 + i * 4 + 2;
-        C.whiteLine.push(geoAt(new THREE.BoxGeometry(0.15, 0.055, 3.5), r.x + eo, 0.05, pz));
-        C.whiteLine.push(geoAt(new THREE.BoxGeometry(0.15, 0.055, 3.5), r.x - eo, 0.05, pz));
+        if (!isNearIntersection(r.x, pz, INT_MARGIN)) {
+          C.whiteLine.push(geoAt(new THREE.BoxGeometry(0.15, 0.055, 3.5), r.x + eo, 0.05, pz));
+          C.whiteLine.push(geoAt(new THREE.BoxGeometry(0.15, 0.055, 3.5), r.x - eo, 0.05, pz));
+        }
+      }
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  // INTERSECTION PADS  (clean flat squares at crossings)
+  // ══════════════════════════════════════════════════════════════
+  INTERSECTIONS.forEach(inter => {
+    const pad = RW + 4;
+    C.interPad.push(geoAt(new THREE.BoxGeometry(pad, 0.06, pad), inter.x, 0.03, inter.z));
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  // SIDEWALKS  (thin, segmented, skip at intersections & roads)
+  // ══════════════════════════════════════════════════════════════
+  const SW_W = 1.0;   // width (thin)
+  const SW_H = 0.06;  // height (barely raised)
+  const SW_SEG = 6;   // segment length
+  const SW_OFF = RW / 2 + SW_W / 2 + 0.2;  // offset from road center
+
+  ROAD_DEFS.forEach(r => {
+    const isH = r.w > r.d;
+    const len = isH ? r.w : r.d;
+    const segs = Math.floor(len / SW_SEG);
+
+    for (let s = 0; s < segs; s++) {
+      const along = -len / 2 + s * SW_SEG + SW_SEG / 2;
+
+      if (isH) {
+        const sx = r.x + along;
+        // skip if this segment is near an intersection
+        if (isNearIntersection(sx, r.z, INT_MARGIN + 2)) continue;
+        const sz1 = r.z + SW_OFF;
+        const sz2 = r.z - SW_OFF;
+        // skip if sidewalk position is on another road
+        if (!isOnRoad(sx, sz1) || Math.abs(r.z + r.d / 2 - sz1) < 2)
+          C.sidewalk.push(geoAt(new THREE.BoxGeometry(SW_SEG - 0.5, SW_H, SW_W), sx, SW_H / 2, sz1));
+        if (!isOnRoad(sx, sz2) || Math.abs(r.z - r.d / 2 - sz2) < 2)
+          C.sidewalk.push(geoAt(new THREE.BoxGeometry(SW_SEG - 0.5, SW_H, SW_W), sx, SW_H / 2, sz2));
+      } else {
+        const sz = r.z + along;
+        if (isNearIntersection(r.x, sz, INT_MARGIN + 2)) continue;
+        const sx1 = r.x + SW_OFF;
+        const sx2 = r.x - SW_OFF;
+        if (!isOnRoad(sx1, sz) || Math.abs(r.x + r.w / 2 - sx1) < 2)
+          C.sidewalk.push(geoAt(new THREE.BoxGeometry(SW_W, SW_H, SW_SEG - 0.5), sx1, SW_H / 2, sz));
+        if (!isOnRoad(sx2, sz) || Math.abs(r.x - r.w / 2 - sx2) < 2)
+          C.sidewalk.push(geoAt(new THREE.BoxGeometry(SW_W, SW_H, SW_SEG - 0.5), sx2, SW_H / 2, sz));
       }
     }
   });
@@ -321,7 +379,8 @@ export function buildWorld(scene) {
   // ══════════════════════════════════════════════════════════════
   const M = {
     road:     new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.7 }),
-    sidewalk: new THREE.MeshStandardMaterial({ color: 0xb0a89a, roughness: 0.85 }),
+    interPad: new THREE.MeshStandardMaterial({ color: 0x3e3e3e, roughness: 0.65 }),
+    sidewalk: new THREE.MeshStandardMaterial({ color: 0xc8beb0, roughness: 0.85 }),
     yellow:   new THREE.MeshStandardMaterial({ color: 0xf4d35e, roughness: 0.5 }),
     white:    new THREE.MeshStandardMaterial({ color: 0xf1faee, roughness: 0.5 }),
     winFrame: new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.6 }),
@@ -346,8 +405,9 @@ export function buildWorld(scene) {
     hydrant:  new THREE.MeshStandardMaterial({ color: 0xcc2200, roughness: 0.5, metalness: 0.3 }),
   };
 
-  finalize(scene, C.road,       M.road,     { receiveShadow: true });
-  finalize(scene, C.sidewalk,   M.sidewalk, { receiveShadow: true });
+  const roadMesh = finalize(scene, C.road, M.road, { receiveShadow: true });
+  finalize(scene, C.interPad,  M.interPad, { receiveShadow: true });
+  finalize(scene, C.sidewalk,  M.sidewalk, { receiveShadow: true });
   finalize(scene, C.yellowDash, M.yellow);
   finalize(scene, C.whiteLine,  M.white);
 
@@ -404,5 +464,6 @@ export function buildWorld(scene) {
     trees,
     lamps,
     trafficLightMats: { red: M.tlRed, yellow: M.tlYellow, green: M.tlGreen },
+    roadMat: M.road,
   };
 }

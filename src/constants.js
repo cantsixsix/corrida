@@ -31,6 +31,15 @@ export const SPEED_MULT = 80;
 // Shadows
 export const SHADOW_CAM_SIZE = 80;
 
+// Monster
+export const MONSTER_SPEED      = 0.08;
+export const MONSTER_SPAWN_DIST = 200;
+export const MONSTER_HIT_DIST   = 6;
+
+// Drift / handbrake
+export const DRIFT_STEER_MULT = 2.5;
+export const DRIFT_FRICTION   = 0.003;
+
 // Road network – large city grid covering the expanded world
 const W = ROAD_WIDTH;
 const L = WORLD_SIZE * 0.85;   // main avenue length

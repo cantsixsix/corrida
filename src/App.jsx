@@ -1,7 +1,6 @@
 // ── App.jsx ─ Open World Drive ──────────────────────────────────
-// Rewritten: modular architecture, delta-time game loop, merged
-// geometry world, NPC traffic, weather effects, minimap,
-// independent touch controls, and proper cleanup.
+// Modular architecture, delta-time game loop, merged geometry world,
+// NPC traffic, weather, monster, audio, drift, camera modes, minimap.
 import { useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 
@@ -9,6 +8,7 @@ import {
   CAR_ACCEL, CAR_BRAKE, CAR_FRICTION, CAR_MAX_SPEED, CAR_REVERSE_MAX,
   STEER_SPEED, CAM_BASE_DIST, CAM_BASE_HEIGHT, CAM_SMOOTH,
   WORLD_BOUND, SPEED_MULT, SHADOW_CAM_SIZE,
+  DRIFT_STEER_MULT, DRIFT_FRICTION,
 } from './constants.js';
 
 import { buildCar } from './Car.js';
@@ -19,27 +19,58 @@ import {
   createDustSystem, updateDust,
   createClouds, updateClouds,
 } from './Effects.js';
-import { HUD, Minimap, drawMinimap, LoadingScreen } from './HUD.jsx';
+import { createMonster, updateMonster } from './Monster.js';
+import { createAudio } from './AudioSystem.js';
+import { HUD, HitFlash, Minimap, drawMinimap, LoadingScreen } from './HUD.jsx';
 
 export default function OpenWorldDrive() {
   const mountRef   = useRef(null);
   const minimapRef = useRef(null);
-  const touchRef   = useRef({ gas: false, brake: false, left: false, right: false });
+  const touchRef   = useRef({ gas: false, brake: false, left: false, right: false, drift: false });
   const nightRef   = useRef(false);
   const rainRef    = useRef(false);
 
-  const [speed, setSpeed]         = useState(0);
-  const [nightMode, setNightMode] = useState(false);
-  const [raining, setRaining]     = useState(false);
-  const [loading, setLoading]     = useState(true);
+  const [speed, setSpeed]             = useState(0);
+  const [nightMode, setNightMode]     = useState(false);
+  const [raining, setRaining]         = useState(false);
+  const [loading, setLoading]         = useState(true);
+  const [cameraMode, setCameraMode]   = useState(0);
+  const [drifting, setDrifting]       = useState(false);
+  const [monsterDist, setMonsterDist] = useState(9999);
+  const [hitFlash, setHitFlash]       = useState(0);
+  const [muted, setMuted]             = useState(false);
+  const [musicOn, setMusicOn]         = useState(false);
 
-  const lastSpeedRef = useRef(-1);
+  const lastSpeedRef   = useRef(-1);
+  const cameraModeRef  = useRef(0);
+  const hitCooldownRef = useRef(0);
 
-  const toggleNight = useCallback(() => setNightMode(n => !n), []);
-  const toggleRain  = useCallback(() => setRaining(r => !r),   []);
+  const toggleNight  = useCallback(() => setNightMode(n => !n), []);
+  const toggleRain   = useCallback(() => setRaining(r => !r),   []);
+  const toggleCamera = useCallback(() => {
+    setCameraMode(m => { const next = (m + 1) % 3; cameraModeRef.current = next; return next; });
+  }, []);
 
   useEffect(() => { nightRef.current = nightMode; }, [nightMode]);
   useEffect(() => { rainRef.current  = raining;  }, [raining]);
+
+  const audioRef = useRef(null);
+  const toggleMute = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.init();
+      audioRef.current.resume();
+      const m = audioRef.current.toggleMute();
+      setMuted(m);
+    }
+  }, []);
+  const toggleMusic = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.init();
+      audioRef.current.resume();
+      const m = audioRef.current.toggleMusic();
+      setMusicOn(m);
+    }
+  }, []);
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -51,7 +82,7 @@ export default function OpenWorldDrive() {
     renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFShadowMap;  // lighter than PCFSoft
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     container.appendChild(renderer.domElement);
 
     // ── Scene + Camera ────────────────────────────────────────
@@ -81,9 +112,9 @@ export default function OpenWorldDrive() {
     scene.add(headlight);
     scene.add(headlight.target);
 
-    // ── Build world (merged geos → fast) ─────────────────────
+    // ── Build world ───────────────────────────────────────────
     const worldData = buildWorld(scene);
-    const { buildings, trees, lamps, trafficLightMats } = worldData;
+    const { buildings, trees, lamps, trafficLightMats, roadMat } = worldData;
 
     // ── Build car ─────────────────────────────────────────────
     const car = buildCar(scene);
@@ -96,15 +127,39 @@ export default function OpenWorldDrive() {
     const dustSys  = createDustSystem(scene);
     const cloudSys = createClouds(scene);
 
-    // ── Physics state (no React) ─────────────────────────────
+    // ── Monster ───────────────────────────────────────────────
+    const monster = createMonster(scene);
+
+    // ── Audio ─────────────────────────────────────────────────
+    const audio = createAudio();
+    audioRef.current = audio;
+
+    const startAudio = () => {
+      audio.init();
+      audio.resume();
+      window.removeEventListener('click', startAudio);
+      window.removeEventListener('keydown', startAudio);
+      window.removeEventListener('touchstart', startAudio);
+    };
+    window.addEventListener('click', startAudio);
+    window.addEventListener('keydown', startAudio);
+    window.addEventListener('touchstart', startAudio);
+
+    // ── Physics state ─────────────────────────────────────────
     const st = {
-      speed: 0, angle: 0, keys: {},
+      speed: 0, angle: 0, keys: {}, drifting: false,
       cam: { distance: CAM_BASE_DIST, height: CAM_BASE_HEIGHT, smoothX: 0, smoothZ: -CAM_BASE_DIST },
     };
 
     // ── Keyboard ──────────────────────────────────────────────
-    const onKeyDown = (e) => { st.keys[e.code] = true; };
-    const onKeyUp   = (e) => { st.keys[e.code] = false; };
+    const onKeyDown = (e) => {
+      st.keys[e.code] = true;
+      if (e.code === 'KeyC') {
+        cameraModeRef.current = (cameraModeRef.current + 1) % 3;
+        setCameraMode(cameraModeRef.current);
+      }
+    };
+    const onKeyUp = (e) => { st.keys[e.code] = false; };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup',   onKeyUp);
 
@@ -117,14 +172,11 @@ export default function OpenWorldDrive() {
     };
     window.addEventListener('resize', onResize);
 
-    // ── Traffic light timer ───────────────────────────────────
     let tlClock = 0;
-
-    // ── Clock (delta-time) ────────────────────────────────────
-    const clock  = new THREE.Clock();
+    let hitFlashVal = 0;
+    const clock = new THREE.Clock();
     let animId;
 
-    // mark loaded
     setLoading(false);
 
     // ═══════════════════════════════════════════════════════════
@@ -134,41 +186,52 @@ export default function OpenWorldDrive() {
       animId = requestAnimationFrame(animate);
 
       const rawDelta = clock.getDelta();
-      const dt = Math.min(rawDelta * 60, 3);   // normalised: 1.0 at 60 fps
-      const sec = rawDelta;                     // real seconds for effects
+      const dt  = Math.min(rawDelta * 60, 3);
+      const sec = rawDelta;
 
       const tc = touchRef.current;
       const k  = st.keys;
 
       // ── Input ────────────────────────────────────────────────
-      const accel = k['ArrowUp']    || k['KeyW'] || tc.gas;
-      const brake = k['ArrowDown']  || k['KeyS'] || tc.brake;
-      const left  = k['ArrowLeft']  || k['KeyA'] || tc.left;
-      const right = k['ArrowRight'] || k['KeyD'] || tc.right;
+      const accel    = k['ArrowUp']    || k['KeyW'] || tc.gas;
+      const brake    = k['ArrowDown']  || k['KeyS'] || tc.brake;
+      const left     = k['ArrowLeft']  || k['KeyA'] || tc.left;
+      const right    = k['ArrowRight'] || k['KeyD'] || tc.right;
+      const driftKey = k['Space'] || tc.drift;
 
-      // ── Car physics (dt-scaled) ──────────────────────────────
+      // ── Drift ────────────────────────────────────────────────
+      const isDrifting = driftKey && Math.abs(st.speed) > 0.3;
+      if (isDrifting !== st.drifting) {
+        st.drifting = isDrifting;
+        setDrifting(isDrifting);
+      }
+
+      // ── Car physics ──────────────────────────────────────────
       if (accel) st.speed = Math.min(st.speed + CAR_ACCEL * dt, CAR_MAX_SPEED);
       else if (brake) st.speed = Math.max(st.speed - CAR_BRAKE * dt, CAR_REVERSE_MAX);
       else {
-        if (st.speed > 0) st.speed = Math.max(0, st.speed - CAR_FRICTION * dt);
-        else if (st.speed < 0) st.speed = Math.min(0, st.speed + CAR_FRICTION * dt);
+        const fric = isDrifting ? DRIFT_FRICTION : CAR_FRICTION;
+        if (st.speed > 0) st.speed = Math.max(0, st.speed - fric * dt);
+        else if (st.speed < 0) st.speed = Math.min(0, st.speed + fric * dt);
       }
 
+      if (isDrifting) st.speed *= (1 - 0.02 * dt);
+
       const sf = Math.min(Math.abs(st.speed) / 1.0, 1);
-      if (left)  st.angle += STEER_SPEED * sf * (st.speed >= 0 ? 1 : -1) * dt;
-      if (right) st.angle -= STEER_SPEED * sf * (st.speed >= 0 ? 1 : -1) * dt;
+      const steerMult = isDrifting ? DRIFT_STEER_MULT : 1;
+      if (left)  st.angle += STEER_SPEED * steerMult * sf * (st.speed >= 0 ? 1 : -1) * dt;
+      if (right) st.angle -= STEER_SPEED * steerMult * sf * (st.speed >= 0 ? 1 : -1) * dt;
 
       let nx = car.position.x + Math.sin(st.angle) * st.speed * dt;
       let nz = car.position.z + Math.cos(st.angle) * st.speed * dt;
 
-      // ── Collision: buildings ──────────────────────────────────
+      // ── Collisions ───────────────────────────────────────────
       let collided = false;
       for (const b of buildings) {
         if (Math.abs(nx - b.x) < b.hw && Math.abs(nz - b.z) < b.hd) {
           collided = true; break;
         }
       }
-      // ── Collision: trees / lamps ─────────────────────────────
       if (!collided) {
         for (const t of trees) {
           const dx = nx - t.x, dz = nz - t.z;
@@ -181,20 +244,24 @@ export default function OpenWorldDrive() {
           if (dx * dx + dz * dz < l.r * l.r + 2) { collided = true; break; }
         }
       }
-      // ── Collision: NPCs ──────────────────────────────────────
       if (!collided && checkNPCCollision(npcs, nx, nz)) collided = true;
 
       if (collided) {
         st.speed *= -0.3;
         nx = car.position.x;
         nz = car.position.z;
+        audio.playCrash();
       }
 
       // ── Position ─────────────────────────────────────────────
       car.position.x = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, nx));
       car.position.z = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, nz));
       car.rotation.y = st.angle;
-      car.rotation.z += ((left ? 0.03 : right ? -0.03 : 0) - car.rotation.z) * 0.08 * dt;
+
+      const leanTarget = isDrifting
+        ? (left ? 0.06 : right ? -0.06 : 0)
+        : (left ? 0.03 : right ? -0.03 : 0);
+      car.rotation.z += (leanTarget - car.rotation.z) * 0.08 * dt;
 
       // ── Headlight ────────────────────────────────────────────
       headlight.position.set(
@@ -204,12 +271,26 @@ export default function OpenWorldDrive() {
         car.position.x + Math.sin(st.angle) * 20, 0,
         car.position.z + Math.cos(st.angle) * 20);
 
-      // ── Camera follow ────────────────────────────────────────
-      const cd = st.cam.distance + Math.abs(st.speed) * 3;
-      st.cam.smoothX += (car.position.x - Math.sin(st.angle) * cd - st.cam.smoothX) * CAM_SMOOTH * dt;
-      st.cam.smoothZ += (car.position.z - Math.cos(st.angle) * cd - st.cam.smoothZ) * CAM_SMOOTH * dt;
-      camera.position.set(st.cam.smoothX, st.cam.height + Math.abs(st.speed) * 2, st.cam.smoothZ);
-      camera.lookAt(car.position.x, 1.5, car.position.z);
+      // ── Camera ───────────────────────────────────────────────
+      const cm = cameraModeRef.current;
+      if (cm === 0) {
+        const cd = st.cam.distance + Math.abs(st.speed) * 3;
+        st.cam.smoothX += (car.position.x - Math.sin(st.angle) * cd - st.cam.smoothX) * CAM_SMOOTH * dt;
+        st.cam.smoothZ += (car.position.z - Math.cos(st.angle) * cd - st.cam.smoothZ) * CAM_SMOOTH * dt;
+        camera.position.set(st.cam.smoothX, st.cam.height + Math.abs(st.speed) * 2, st.cam.smoothZ);
+        camera.lookAt(car.position.x, 1.5, car.position.z);
+      } else if (cm === 1) {
+        camera.position.set(car.position.x, 80, car.position.z + 0.01);
+        camera.lookAt(car.position.x, 0, car.position.z);
+      } else {
+        const cx = car.position.x + Math.sin(st.angle) * 0.5;
+        const cz = car.position.z + Math.cos(st.angle) * 0.5;
+        camera.position.set(cx, 2.2, cz);
+        camera.lookAt(
+          car.position.x + Math.sin(st.angle) * 20,
+          1.8,
+          car.position.z + Math.cos(st.angle) * 20);
+      }
 
       // ── Sun follow ───────────────────────────────────────────
       sunLight.position.set(car.position.x + 50, 100, car.position.z + 40);
@@ -234,7 +315,16 @@ export default function OpenWorldDrive() {
         headlight.intensity    = rainRef.current ? 0.8 : 0;
       }
 
-      // ── Traffic lights (cycle every 6s) ──────────────────────
+      // ── Wet road ─────────────────────────────────────────────
+      if (rainRef.current) {
+        roadMat.roughness = 0.15;
+        roadMat.metalness = 0.6;
+      } else {
+        roadMat.roughness = 0.7;
+        roadMat.metalness = 0;
+      }
+
+      // ── Traffic lights ───────────────────────────────────────
       tlClock += sec;
       const phase = (tlClock % 6) / 6;
       if (phase < 0.45) {
@@ -254,12 +344,30 @@ export default function OpenWorldDrive() {
       // ── NPCs ─────────────────────────────────────────────────
       updateNPCs(npcs, dt);
 
+      // ── Monster ──────────────────────────────────────────────
+      const monResult = updateMonster(monster, dt, car.position, isNight);
+      setMonsterDist(Math.round(monResult.dist));
+
+      if (hitCooldownRef.current > 0) hitCooldownRef.current -= sec;
+      if (monResult.isClose && hitCooldownRef.current <= 0) {
+        st.speed *= -0.5;
+        hitFlashVal = 0.6;
+        hitCooldownRef.current = 2;
+      }
+      if (hitFlashVal > 0) {
+        hitFlashVal = Math.max(0, hitFlashVal - sec * 1.5);
+        setHitFlash(hitFlashVal);
+      }
+
       // ── Effects ──────────────────────────────────────────────
       updateRain(rainSys, sec, car.position, rainRef.current && !isNight);
-      updateDust(dustSys, sec, car.position, st.angle, st.speed);
+      updateDust(dustSys, sec, car.position, st.angle, st.speed * (isDrifting ? 2 : 1));
       updateClouds(cloudSys, sec, isNight, rainRef.current);
 
-      // ── HUD speed (only update when value changes) ──────────
+      // ── Audio ────────────────────────────────────────────────
+      audio.update(st.speed, isNight, rainRef.current, monResult.dist);
+
+      // ── HUD speed ────────────────────────────────────────────
       const displaySpeed = Math.abs(Math.round(st.speed * SPEED_MULT));
       if (displaySpeed !== lastSpeedRef.current) {
         lastSpeedRef.current = displaySpeed;
@@ -269,7 +377,7 @@ export default function OpenWorldDrive() {
       // ── Minimap ──────────────────────────────────────────────
       if (minimapRef.current) {
         const ctx = minimapRef.current.getContext('2d');
-        if (ctx) drawMinimap(ctx, car.position, st.angle, npcs);
+        if (ctx) drawMinimap(ctx, car.position, st.angle, npcs, monster.mesh.position, isNight);
       }
 
       // ── Render ───────────────────────────────────────────────
@@ -279,15 +387,19 @@ export default function OpenWorldDrive() {
     animate();
 
     // ═══════════════════════════════════════════════════════════
-    // CLEANUP  (proper dispose)
+    // CLEANUP
     // ═══════════════════════════════════════════════════════════
     return () => {
       cancelAnimationFrame(animId);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup',   onKeyUp);
       window.removeEventListener('resize',  onResize);
+      window.removeEventListener('click', startAudio);
+      window.removeEventListener('keydown', startAudio);
+      window.removeEventListener('touchstart', startAudio);
 
-      // traverse & dispose all geometry / materials
+      audio.dispose();
+
       scene.traverse(obj => {
         if (obj.geometry) obj.geometry.dispose();
         if (obj.material) {
@@ -303,6 +415,7 @@ export default function OpenWorldDrive() {
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'relative', overflow: 'hidden', background: '#000' }}>
       {loading && <LoadingScreen />}
+      <HitFlash intensity={hitFlash} />
       <div ref={mountRef} style={{ width: '100%', height: '100%' }} />
       <Minimap canvasRef={minimapRef} />
       <HUD
@@ -311,7 +424,15 @@ export default function OpenWorldDrive() {
         raining={raining}
         onToggleNight={toggleNight}
         onToggleRain={toggleRain}
+        onToggleCamera={toggleCamera}
+        onToggleMute={toggleMute}
+        onToggleMusic={toggleMusic}
         touchRef={touchRef}
+        drifting={drifting}
+        monsterDist={monsterDist}
+        muted={muted}
+        musicOn={musicOn}
+        cameraMode={cameraMode}
       />
     </div>
   );
