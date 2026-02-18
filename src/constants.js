@@ -2,7 +2,7 @@
 // All physics values are "per frame at 60 fps".
 // The game loop multiplies by dt = clamp(delta * 60, 0, 3).
 
-export const WORLD_SIZE = 1600;
+export const WORLD_SIZE = 1500;
 export const ROAD_WIDTH = 14;
 
 // Car physics
