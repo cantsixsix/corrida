@@ -1,16 +1,28 @@
-# React + Vite
+# Corrida 3D
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Jogo de corrida no navegador feito com React + Three.js: você dirige por um mundo 3D fugindo de um monstro, desviando de carros NPC, com drift, modos de câmera, minimapa, chuva, poeira e trilha phonk.
 
-Currently, two official plugins are available:
+**Jogar:** https://corrida-black.vercel.app
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Rodar localmente
 
-## React Compiler
+```bash
+npm install
+npm run dev      # abre em http://localhost:5173
+npm run build    # gera a versão de produção em dist/
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Estrutura
 
-## Expanding the ESLint configuration
+| Arquivo | O que faz |
+|---|---|
+| `src/App.jsx` | Loop do jogo, câmeras, drift, minimapa e controles |
+| `src/World.js` | Geração do mundo/pista |
+| `src/Car.js` | Modelo do carro do jogador |
+| `src/Monster.js` | Monstro perseguidor |
+| `src/NPCSystem.js` | Carros NPC e colisão |
+| `src/Effects.js` | Chuva, poeira e nuvens |
+| `src/AudioSystem.js` | Música de fundo (`src/assets/phonk.mp3`, 6 min em loop) |
+| `src/HUD.jsx` | Interface na tela (HUD) |
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Ideias e variações deste projeto: [IDEIA.md](IDEIA.md).
